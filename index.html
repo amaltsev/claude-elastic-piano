@@ -95,6 +95,8 @@ label.inline input[type=number] { width: 70px; }
 #recstatus { font-size: 13px; color: var(--muted); }
 #recstatus.live { color: #d0453b; font-weight: 600; }
 button:disabled { opacity: .45; cursor: default; border-color: var(--line); }
+.hint a, .foot a { color: var(--accent); }
+.foot { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }
 kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; font: 12px ui-monospace, monospace; background: var(--panel); }
 </style>
 </head>
@@ -215,8 +217,12 @@ kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4p
     Мышью или пальцем можно вести по клавишам. Точка над клавишей — нота совпадает с обычным 12-тоновым строем (±5 ¢).
     Цвет — положение ноты внутри октавы. Настройки и мелодия сохраняются в адресе страницы — ссылкой можно поделиться.
     Пока курсор в редакторе нот, клавиатура печатает текст, а не играет — щёлкните мимо. <kbd>Esc</kbd> — остановить всё.
-    Формат записи описан в README.md.
+    Формат записи описан в <a href="https://github.com/amaltsev/claude-elastic-piano#readme">README</a>.
   </p>
+  <footer class="foot">
+    <a href="https://github.com/amaltsev/claude-elastic-piano">Исходный код на GitHub</a> ·
+    <a href="https://github.com/amaltsev/claude-elastic-piano/blob/main/LICENSE">CC0 — общественное достояние</a>
+  </footer>
 </main>
 
 <script src="songs.js"></script>
