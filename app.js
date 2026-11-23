@@ -250,7 +250,10 @@ addEventListener("keydown", e => {
   if (e.code === "ArrowLeft" || e.code === "ArrowRight") { e.preventDefault(); if (!e.repeat) shift(e.code === "ArrowLeft" ? -1 : 1); return; }
   const j = CODES.indexOf(e.code); if (j < 0) return;
   e.preventDefault(); if (e.repeat) return;
-  press("k" + e.code, offset + j);
+  // Shift: a period (octave) higher. Only new presses are affected; held notes keep their pitch.
+  const i = offset + j + (e.shiftKey ? state.n : 0);
+  if (i >= total) { setMsg("Shift: нота выше последней клавиши — добавьте октаву.", true); return; }
+  press("k" + e.code, i);
 });
 addEventListener("keyup", e => {
   if (e.code === "Space") { setSustain(false); return; }
