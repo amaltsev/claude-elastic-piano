@@ -173,17 +173,27 @@ function makeVoice(f, t, w, vel, dest, i) {
     o.frequency.value = f; o.detune.value = d;
     o.connect(g); o.start(t); return o;
   });
-  const lvl = peak / detunes.length;
+  const lvl = peak / detunes.length, atk = 0.006;
+  const env = w === "piano"
+    ? { t, atk, lvl, target: 0, tau: clamp(1.6 * Math.sqrt(220 / f), 0.25, 3.5) }
+    : { t, atk, lvl, target: lvl * 0.75, tau: 0.25 };
   g.gain.setValueAtTime(0, t);
-  g.gain.linearRampToValueAtTime(lvl, t + 0.006);
-  if (w === "piano") g.gain.setTargetAtTime(0, t + 0.006, clamp(1.6 * Math.sqrt(220 / f), 0.25, 3.5));
-  else g.gain.setTargetAtTime(lvl * 0.75, t + 0.006, 0.25);
-  return { oscs, g, i };
+  g.gain.linearRampToValueAtTime(lvl, t + atk);
+  g.gain.setTargetAtTime(env.target, t + atk, env.tau);
+  return { oscs, g, i, env };
+}
+// Envelope level at time t, computed from the schedule above. Reading gain.value is not
+// an option: for a release scheduled ahead (song playback) it returns the value *now*,
+// and Firefox (no cancelAndHoldAtTime) then jumped to it, giving each note a second attack.
+function envAt(e, t) {
+  if (t <= e.t) return 0;
+  if (t < e.t + e.atk) return e.lvl * (t - e.t) / e.atk;
+  return e.target + (e.lvl - e.target) * Math.exp(-(t - e.t - e.atk) / e.tau);
 }
 function releaseVoice(v, at) {
   const t = at ?? ctx.currentTime, p = v.g.gain;
-  if (p.cancelAndHoldAtTime) p.cancelAndHoldAtTime(t);
-  else { const cur = p.value; p.cancelScheduledValues(t); p.setValueAtTime(cur, t); }
+  p.cancelScheduledValues(t);
+  p.setValueAtTime(envAt(v.env, t), t);
   p.setTargetAtTime(0, t, state.rel / 4);
   v.oscs.forEach(o => o.stop(t + state.rel + 0.3));
 }
@@ -212,12 +222,12 @@ function release(src) {
 }
 function setSustain(on) {
   sustain = on; $("sus").classList.toggle("on", on);
-  if (!on) { held.forEach(releaseVoice); held = []; }
+  if (!on) { held.forEach(v => releaseVoice(v)); held = []; }
 }
 function stopAll() {
   stopScale(); stopSong();
   [...voices.keys()].forEach(release);
-  held.forEach(releaseVoice); held = [];
+  held.forEach(v => releaseVoice(v)); held = [];
 }
 
 // ---------- scale playback ----------
