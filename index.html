@@ -1,0 +1,470 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Гибкое пианино</title>
+<style>
+:root {
+  --bg: #f6f5f2; --panel: #ffffff; --fg: #1d1d1f; --muted: #6b6b70; --line: #dcdad4;
+  --accent: #3b5bdb; --key-l: 90%; --key-s: 40%; --key-on-l: 58%; --shadow: 0 1px 2px rgba(0,0,0,.08);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141416; --panel: #1e1e22; --fg: #ececef; --muted: #9a9aa2; --line: #34343a;
+    --accent: #7c96ff; --key-l: 24%; --key-s: 30%; --key-on-l: 52%; --shadow: none;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #141416; --panel: #1e1e22; --fg: #ececef; --muted: #9a9aa2; --line: #34343a;
+  --accent: #7c96ff; --key-l: 24%; --key-s: 30%; --key-on-l: 52%; --shadow: none;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+main { max-width: 1200px; margin: 0 auto; padding: 20px 16px 40px; }
+h1 { font-size: 22px; margin: 0 0 2px; }
+.sub { color: var(--muted); margin: 0 0 18px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; box-shadow: var(--shadow); }
+.controls { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px 14px; }
+label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+input, select, button {
+  font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line);
+  border-radius: 6px; padding: 6px 8px; min-width: 0;
+}
+input[type=range] { padding: 0; accent-color: var(--accent); }
+button { cursor: pointer; }
+button:hover { border-color: var(--accent); }
+.row { display: flex; flex-wrap: wrap; gap: 6px; }
+.row button { padding: 4px 8px; font-size: 13px; }
+.info { margin: 14px 0 10px; font-size: 14px; }
+.info b { font-variant-numeric: tabular-nums; }
+.bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0 8px; }
+.bar .spacer { flex: 1; }
+.pill { font-size: 13px; padding: 3px 9px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); }
+.pill.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+.kb-wrap { overflow-x: auto; padding-bottom: 6px; }
+.kb { display: flex; gap: 3px; min-height: 210px; user-select: none; -webkit-user-select: none; touch-action: none; }
+.key {
+  --h: 0;
+  flex: 1 0 32px; position: relative; border-radius: 0 0 7px 7px;
+  background: hsl(var(--h) var(--key-s) var(--key-l));
+  border: 1px solid var(--line); border-top: 4px solid hsl(var(--h) 60% 50%);
+  display: flex; flex-direction: column; justify-content: flex-end; align-items: center;
+  padding: 4px 1px 6px; cursor: pointer; transition: background .06s, transform .06s;
+  font-variant-numeric: tabular-nums; opacity: .55;
+}
+.key.mapped { opacity: 1; }
+.key.period { margin-left: 6px; }
+.key.period:first-child { margin-left: 0; }
+.key.on { background: hsl(var(--h) 75% var(--key-on-l)); transform: translateY(2px); color: #fff; }
+.key .kl { font-weight: 700; font-size: 16px; min-height: 22px; }
+.key .st { font-size: 11px; color: var(--muted); }
+.key .nt { font-size: 10px; margin-top: 6px; }
+.key .ct { font-size: 10px; color: var(--muted); }
+.key.on .st, .key.on .ct { color: #fff; }
+.key .dot { position: absolute; top: 6px; width: 7px; height: 7px; border-radius: 50%; background: var(--fg); opacity: .7; }
+
+.ruler-wrap { margin-top: 16px; }
+.ruler-title { font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+.ruler { position: relative; height: 96px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin: 0 10px; }
+.ruler .lab { position: absolute; left: -10px; font-size: 11px; color: var(--muted); }
+.tick { position: absolute; width: 2px; transform: translateX(-1px); }
+.tick span { position: absolute; top: 100%; left: 50%; transform: translateX(-50%); font-size: 10px; color: var(--muted); white-space: nowrap; }
+.t12 { top: 0; height: 22px; background: var(--muted); }
+.tj { top: 38px; height: 10px; background: #d9822b; }
+.tj span { color: #d9822b; }
+.tn { bottom: 0; height: 24px; }
+.tn span { top: auto; bottom: 100%; }
+.hint { color: var(--muted); font-size: 13px; margin-top: 14px; }
+kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; font: 12px ui-monospace, monospace; background: var(--panel); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Гибкое пианино</h1>
+  <p class="sub">Октава (или любой другой интервал), равномерно разделённая на произвольное число шагов.</p>
+
+  <div class="panel">
+    <div class="controls">
+      <label>Шагов в октаве
+        <input id="n" type="number" min="1" max="120" step="1">
+      </label>
+      <label>Начальная частота, Гц
+        <input id="base" type="number" min="10" max="5000" step="0.01">
+      </label>
+      <label>Число октав
+        <input id="oct" type="number" min="1" max="10" step="1">
+      </label>
+      <label>Отношение «октавы»
+        <input id="ratio" type="number" min="1.01" max="10" step="0.01" title="2 — обычная октава; 3 — тритава (Болен–Пирс)">
+      </label>
+      <label>Тембр
+        <select id="wave">
+          <option value="piano">Пиано</option>
+          <option value="organ">Орган</option>
+          <option value="sine">Синус</option>
+          <option value="triangle">Треугольник</option>
+          <option value="sawtooth">Пила</option>
+          <option value="square">Меандр</option>
+        </select>
+      </label>
+      <label>Громкость
+        <input id="vol" type="range" min="0" max="1" step="0.01">
+      </label>
+      <label>Затухание после отпускания
+        <input id="rel" type="range" min="0.05" max="3" step="0.05">
+      </label>
+      <label>Пресет
+        <select id="preset">
+          <option value="">—</option>
+          <option value="12,2">12 — стандарт</option>
+          <option value="5,2">5 — пентатоника (≈ слендро)</option>
+          <option value="7,2">7 — ≈ тайский строй</option>
+          <option value="10,2">10</option>
+          <option value="15,2">15</option>
+          <option value="17,2">17</option>
+          <option value="19,2">19 — хорошие терции</option>
+          <option value="22,2">22</option>
+          <option value="24,2">24 — четвертитоны</option>
+          <option value="31,2">31 — почти мезотон</option>
+          <option value="53,2">53 — почти чистый строй</option>
+          <option value="13,3">13 на 3/1 — Болен–Пирс</option>
+        </select>
+      </label>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <span style="font-size:13px;color:var(--muted);align-self:center">Начать с:</span>
+      <button data-base="130.81">C3</button>
+      <button data-base="220">A3</button>
+      <button data-base="261.63">C4</button>
+      <button data-base="440">A4</button>
+    </div>
+  </div>
+
+  <div class="info" id="info"></div>
+
+  <div class="bar">
+    <button id="scale">▶ Гамма</button>
+    <button id="stop">■ Стоп</button>
+    <span id="sus" class="pill">Сустейн (пробел)</span>
+    <span class="spacer"></span>
+    <button id="left" title="Сдвинуть раскладку клавиатуры на октаву вниз">← октава</button>
+    <span id="win" class="pill"></span>
+    <button id="right" title="Сдвинуть раскладку клавиатуры на октаву вверх">октава →</button>
+  </div>
+
+  <div class="kb-wrap" id="kbwrap"><div class="kb" id="kb"></div></div>
+
+  <div class="ruler-wrap">
+    <div class="ruler-title">Одна «октава» в центах: сверху — обычные 12 полутонов, посередине — чистые интервалы, снизу — ваш строй</div>
+    <div class="ruler" id="ruler"></div>
+  </div>
+
+  <p class="hint">
+    Клавиши идут снизу вверх по рядам: <kbd>Z</kbd>…<kbd>/</kbd>, затем <kbd>A</kbd>…<kbd>'</kbd>,
+    <kbd>Q</kbd>…<kbd>]</kbd>, <kbd>1</kbd>…<kbd>=</kbd> — до 45 нот подряд. Работает при любой раскладке (в т.ч. русской).
+    <kbd>←</kbd> <kbd>→</kbd> сдвигают раскладку на октаву, <kbd>Пробел</kbd> — педаль.
+    Мышью или пальцем можно вести по клавишам. Точка над клавишей — нота совпадает с обычным 12-тоновым строем (±5 ¢).
+    Цвет — положение ноты внутри октавы. Настройки сохраняются в адресе страницы — ссылкой можно поделиться.
+  </p>
+</main>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+
+// ---------- keyboard mapping (physical keys, layout independent) ----------
+const ROWS = [
+  ["KeyZ","KeyX","KeyC","KeyV","KeyB","KeyN","KeyM","Comma","Period","Slash"],
+  ["KeyA","KeyS","KeyD","KeyF","KeyG","KeyH","KeyJ","KeyK","KeyL","Semicolon","Quote"],
+  ["KeyQ","KeyW","KeyE","KeyR","KeyT","KeyY","KeyU","KeyI","KeyO","KeyP","BracketLeft","BracketRight"],
+  ["Digit1","Digit2","Digit3","Digit4","Digit5","Digit6","Digit7","Digit8","Digit9","Digit0","Minus","Equal"],
+];
+const CODES = ROWS.flat();
+const SYM = {Comma:",",Period:".",Slash:"/",Semicolon:";",Quote:"'",BracketLeft:"[",BracketRight:"]",Minus:"-",Equal:"="};
+const keyLabel = c => SYM[c] || c.replace(/^Key|^Digit/, "");
+
+// ---------- state ----------
+const state = { n: 15, base: 261.63, oct: 2, ratio: 2, wave: "piano", vol: 0.6, rel: 0.5 };
+let offset = 0, total = 0, freqs = [], keyEls = [], counts = [];
+let sustain = false;
+
+function readHash() {
+  try {
+    const p = new URLSearchParams(location.hash.slice(1));
+    const num = (k, d) => (p.has(k) && isFinite(+p.get(k))) ? +p.get(k) : d;
+    state.n = num("n", state.n); state.base = num("f", state.base); state.oct = num("o", state.oct);
+    state.ratio = num("r", state.ratio); state.vol = num("v", state.vol); state.rel = num("rel", state.rel);
+    if (p.has("w")) state.wave = p.get("w");
+  } catch (e) {}
+}
+function writeHash() {
+  try {
+    const p = new URLSearchParams({ n: state.n, f: state.base, o: state.oct, r: state.ratio, w: state.wave, v: state.vol, rel: state.rel });
+    history.replaceState(null, "", "#" + p.toString());
+  } catch (e) {}
+}
+const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
+function sanitize() {
+  state.n = clamp(Math.round(state.n) || 12, 1, 120);
+  state.base = clamp(state.base || 261.63, 10, 5000);
+  state.oct = clamp(Math.round(state.oct) || 1, 1, 10);
+  state.ratio = clamp(state.ratio || 2, 1.01, 10);
+  if (!["piano","organ","sine","triangle","sawtooth","square"].includes(state.wave)) state.wave = "piano";
+  state.vol = clamp(state.vol, 0, 1); state.rel = clamp(state.rel, 0.05, 3);
+}
+
+// ---------- music helpers ----------
+const NAMES = ["C","C♯","D","D♯","E","F","F♯","G","G♯","A","A♯","B"];
+function nearest12(f) {
+  const m = 69 + 12 * Math.log2(f / 440), r = Math.round(m);
+  return { name: NAMES[((r % 12) + 12) % 12] + (Math.floor(r / 12) - 1), cents: (m - r) * 100 };
+}
+const fmtC = c => (c >= 0 ? "+" : "−") + Math.abs(c).toFixed(Math.abs(c) < 10 ? 1 : 0);
+const JUST = [["6/5", 6/5], ["5/4", 5/4], ["4/3", 4/3], ["7/5", 7/5], ["3/2", 3/2], ["5/3", 5/3], ["7/4", 7/4]];
+
+// ---------- build ----------
+function build() {
+  sanitize(); stopAll();
+  const { n, base, oct, ratio } = state;
+  total = Math.min(n * oct + 1, 1201);
+  freqs = Array.from({ length: total }, (_, i) => base * Math.pow(ratio, i / n));
+  counts = new Array(total).fill(0);
+  if (offset >= total) offset = 0;
+
+  const kb = $("kb"); kb.innerHTML = ""; keyEls = [];
+  const frag = document.createDocumentFragment();
+  for (let i = 0; i < total; i++) {
+    const el = document.createElement("div");
+    el.className = "key" + (i % n === 0 ? " period" : "");
+    el.dataset.i = i;
+    el.style.setProperty("--h", Math.round((i % n) / n * 330));
+    const nn = nearest12(freqs[i]);
+    el.title = `${freqs[i].toFixed(2)} Гц · шаг ${i % n} · ≈ ${nn.name} ${fmtC(nn.cents)} ¢`;
+    el.innerHTML = (Math.abs(nn.cents) < 5 ? '<span class="dot"></span>' : "") +
+      `<span class="kl"></span><span class="st">${i % n}</span><span class="nt">${nn.name}</span><span class="ct">${fmtC(nn.cents)}</span>`;
+    keyEls.push(el); frag.appendChild(el);
+  }
+  kb.appendChild(frag);
+  updateMapping(); renderInfo(); renderRuler(); syncInputs(); writeHash();
+}
+
+function updateMapping() {
+  keyEls.forEach((el, i) => {
+    const j = i - offset, mapped = j >= 0 && j < CODES.length;
+    el.classList.toggle("mapped", mapped);
+    el.querySelector(".kl").textContent = mapped ? keyLabel(CODES[j]) : "";
+  });
+  const last = Math.min(total, offset + CODES.length) - 1;
+  $("win").textContent = `клавиатура: ноты ${offset}–${last}`;
+  $("left").disabled = offset === 0;
+  $("right").disabled = offset + state.n >= total;
+  const el = keyEls[offset];
+  if (el) { const w = $("kbwrap"); w.scrollTo({ left: el.offsetLeft - w.offsetLeft - 8, behavior: "smooth" }); }
+}
+function shift(dir) {
+  const next = offset + dir * state.n;
+  if (next < 0 || next >= total) return;
+  offset = next; updateMapping();
+}
+
+function renderInfo() {
+  const { n, ratio } = state;
+  const P = 1200 * Math.log2(ratio), step = P / n;
+  const parts = [`Шаг: <b>${step.toFixed(2)} ¢</b> (×${Math.pow(ratio, 1 / n).toFixed(5)}), обычный полутон — 100 ¢.`,
+    `Всего клавиш: <b>${total}</b>, от <b>${freqs[0].toFixed(2)}</b> до <b>${freqs[total - 1].toFixed(2)} Гц</b>.`];
+  const best = [];
+  for (const [name, r] of [["квинта 3/2", 3/2], ["б. терция 5/4", 5/4], ["м. терция 6/5", 6/5]]) {
+    if (r >= ratio) continue;
+    const c = 1200 * Math.log2(r), k = Math.round(c / step), err = k * step - c;
+    best.push(`${name} ≈ шаг ${k} (<b>${fmtC(err)} ¢</b>)`);
+  }
+  if (best.length) parts.push("Ближайшие чистые интервалы: " + best.join(", ") + ".");
+  $("info").innerHTML = parts.join(" ");
+}
+
+function renderRuler() {
+  const { n, ratio } = state;
+  const P = 1200 * Math.log2(ratio), r = $("ruler");
+  r.innerHTML = "";
+  const add = (cls, cents, text, color) => {
+    const t = document.createElement("div");
+    t.className = "tick " + cls; t.style.left = (cents / P * 100) + "%";
+    if (color) t.style.background = color;
+    if (text !== "") { const s = document.createElement("span"); s.textContent = text; t.appendChild(s); }
+    r.appendChild(t);
+  };
+  for (let k = 0; k * 100 <= P + 1e-9; k++) add("t12", k * 100, P <= 2400 ? k : "");
+  for (const [name, v] of JUST) { const c = 1200 * Math.log2(v); if (c < P) add("tj", c, name); }
+  const showLabels = n <= 31;
+  for (let k = 0; k <= n; k++) add("tn", k * P / n, showLabels ? k : "", `hsl(${Math.round((k % n) / n * 330)} 60% 50%)`);
+}
+
+function syncInputs() {
+  $("n").value = state.n; $("base").value = state.base; $("oct").value = state.oct; $("ratio").value = state.ratio;
+  $("wave").value = state.wave; $("vol").value = state.vol; $("rel").value = state.rel;
+  const pv = `${state.n},${state.ratio}`;
+  $("preset").value = [...$("preset").options].some(o => o.value === pv) ? pv : "";
+}
+
+// ---------- audio ----------
+let ctx = null, master = null, waves = {};
+function ensureAudio() {
+  if (!ctx) {
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -14; comp.ratio.value = 4;
+    master = ctx.createGain(); master.gain.value = state.vol;
+    master.connect(comp).connect(ctx.destination);
+    const mk = amps => {
+      const re = new Float32Array(amps.length + 1), im = new Float32Array(amps.length + 1);
+      amps.forEach((a, k) => im[k + 1] = a);
+      return ctx.createPeriodicWave(re, im);
+    };
+    waves.piano = mk([1, .55, .32, .22, .14, .1, .06, .045, .03, .02, .012, .008]);
+    waves.organ = mk([1, .7, .45, .5, 0, .3, 0, .25, 0, 0, 0, .12]);
+  }
+  if (ctx.state === "suspended") ctx.resume();
+}
+
+function startVoice(i) {
+  ensureAudio();
+  const f = freqs[i], t = ctx.currentTime, w = state.wave;
+  const g = ctx.createGain(); g.connect(master);
+  const harsh = w === "sawtooth" || w === "square";
+  const peak = (harsh ? 0.12 : 0.28) * clamp(Math.pow(300 / f, 0.25), 0.5, 1.4);
+  const detunes = w === "piano" ? [-2, 2] : [0];
+  const oscs = detunes.map(d => {
+    const o = ctx.createOscillator();
+    if (waves[w]) o.setPeriodicWave(waves[w]); else o.type = w;
+    o.frequency.value = f; o.detune.value = d;
+    o.connect(g); o.start(t); return o;
+  });
+  const lvl = peak / detunes.length;
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(lvl, t + 0.006);
+  if (w === "piano") g.gain.setTargetAtTime(0, t + 0.006, clamp(1.6 * Math.sqrt(220 / f), 0.25, 3.5));
+  else g.gain.setTargetAtTime(lvl * 0.75, t + 0.006, 0.25);
+  return { oscs, g, i };
+}
+function releaseVoice(v) {
+  const t = ctx.currentTime, p = v.g.gain;
+  if (p.cancelAndHoldAtTime) p.cancelAndHoldAtTime(t);
+  else { const cur = p.value; p.cancelScheduledValues(t); p.setValueAtTime(cur, t); }
+  p.setTargetAtTime(0, t, state.rel / 4);
+  v.oscs.forEach(o => o.stop(t + state.rel + 0.3));
+}
+
+const voices = new Map(); // source id -> voice
+let held = [];
+function mark(i, d) {
+  if (!keyEls[i]) return;
+  counts[i] = Math.max(0, counts[i] + d);
+  keyEls[i].classList.toggle("on", counts[i] > 0);
+}
+function press(src, i) {
+  if (i < 0 || i >= total) return;
+  release(src);
+  voices.set(src, startVoice(i)); mark(i, 1);
+}
+function release(src) {
+  const v = voices.get(src); if (!v) return;
+  voices.delete(src); mark(v.i, -1);
+  if (sustain) held.push(v); else releaseVoice(v);
+}
+function setSustain(on) {
+  sustain = on; $("sus").classList.toggle("on", on);
+  if (!on) { held.forEach(releaseVoice); held = []; }
+}
+function stopAll() {
+  stopScale();
+  [...voices.keys()].forEach(release);
+  held.forEach(releaseVoice); held = [];
+}
+
+// ---------- scale playback ----------
+let scaleTimer = null;
+function playScale() {
+  stopScale();
+  const start = offset, end = Math.min(total - 1, offset + state.n);
+  const seq = [];
+  for (let i = start; i <= end; i++) seq.push(i);
+  for (let i = end - 1; i >= start; i--) seq.push(i);
+  let k = 0;
+  const stepMs = clamp(3600 / seq.length, 110, 280);
+  const tick = () => {
+    if (k >= seq.length) { release("scale"); scaleTimer = null; return; }
+    press("scale", seq[k++]);
+    scaleTimer = setTimeout(tick, stepMs);
+  };
+  tick();
+}
+function stopScale() {
+  if (scaleTimer) { clearTimeout(scaleTimer); scaleTimer = null; }
+  release("scale");
+}
+
+// ---------- events ----------
+const isTyping = el => el && (el.tagName === "INPUT" && el.type !== "range" || el.tagName === "SELECT" || el.tagName === "TEXTAREA");
+addEventListener("keydown", e => {
+  if (isTyping(e.target) || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.code === "Space") { e.preventDefault(); if (!e.repeat) setSustain(true); return; }
+  if (e.code === "ArrowLeft" || e.code === "ArrowRight") { e.preventDefault(); if (!e.repeat) shift(e.code === "ArrowLeft" ? -1 : 1); return; }
+  const j = CODES.indexOf(e.code); if (j < 0) return;
+  e.preventDefault(); if (e.repeat) return;
+  press("k" + e.code, offset + j);
+});
+addEventListener("keyup", e => {
+  if (e.code === "Space") { setSustain(false); return; }
+  release("k" + e.code);
+});
+addEventListener("blur", () => { setSustain(false); stopAll(); });
+
+const ptr = new Map();
+const kb = $("kb");
+kb.addEventListener("pointerdown", e => {
+  const el = e.target.closest(".key"); if (!el) return;
+  e.preventDefault();
+  try { kb.setPointerCapture(e.pointerId); } catch (_) {}
+  ptr.set(e.pointerId, +el.dataset.i); press("p" + e.pointerId, +el.dataset.i);
+});
+kb.addEventListener("pointermove", e => {
+  if (!ptr.has(e.pointerId)) return;
+  const el = document.elementFromPoint(e.clientX, e.clientY)?.closest(".key");
+  if (el && +el.dataset.i !== ptr.get(e.pointerId)) { ptr.set(e.pointerId, +el.dataset.i); press("p" + e.pointerId, +el.dataset.i); }
+});
+const up = e => { if (ptr.delete(e.pointerId)) release("p" + e.pointerId); };
+kb.addEventListener("pointerup", up); kb.addEventListener("pointercancel", up);
+
+const bindNum = (id, key) => $(id).addEventListener("input", e => {
+  const v = parseFloat(e.target.value); if (!isFinite(v)) return;
+  state[key] = v; offset = 0; build();
+});
+bindNum("n", "n"); bindNum("base", "base"); bindNum("oct", "oct"); bindNum("ratio", "ratio");
+// keep a typed value even if it got clamped, but re-show the clamped one on blur
+["n","base","oct","ratio"].forEach(id => $(id).addEventListener("change", syncInputs));
+$("wave").addEventListener("change", e => { state.wave = e.target.value; writeHash(); e.target.blur(); });
+$("vol").addEventListener("input", e => { state.vol = +e.target.value; if (master) master.gain.value = state.vol; writeHash(); });
+$("rel").addEventListener("input", e => { state.rel = +e.target.value; writeHash(); });
+$("preset").addEventListener("change", e => {
+  if (e.target.value) { const [n, r] = e.target.value.split(",").map(Number); state.n = n; state.ratio = r; offset = 0; build(); }
+  e.target.blur();
+});
+document.querySelectorAll("[data-base]").forEach(b => b.addEventListener("click", () => {
+  state.base = +b.dataset.base; build(); b.blur();
+}));
+$("scale").addEventListener("click", e => { playScale(); e.currentTarget.blur(); });
+$("stop").addEventListener("click", e => { stopAll(); e.currentTarget.blur(); });
+$("left").addEventListener("click", e => { shift(-1); e.currentTarget.blur(); });
+$("right").addEventListener("click", e => { shift(1); e.currentTarget.blur(); });
+$("sus").addEventListener("click", () => setSustain(!sustain));
+
+readHash();
+build();
+</script>
+</body>
+</html>
