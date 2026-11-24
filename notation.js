@@ -1,8 +1,8 @@
 "use strict";
-// FPN — Flex Piano Notation. Format description: README.md.
+// EPN — Elastic Piano Notation. Format description: README.md.
 // Classic script (not a module) so that index.html also works from file://.
 
-const FPN = (() => {
+const EPN = (() => {
   const WAVES = ["piano", "organ", "sine", "triangle", "sawtooth", "square"];
   const PC = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
 

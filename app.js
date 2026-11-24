@@ -355,7 +355,7 @@ function songMark(pl, idx, d) {
 
 function playSong() {
   stopAll();
-  const song = FPN.parse(songText.value, state.n);
+  const song = EPN.parse(songText.value, state.n);
   if (!song.events.length) { setMsg(errText(song.errors) || "Нет нот для проигрывания.", true); return; }
   const songBase = applySong(song);
   ensureAudio();
@@ -427,7 +427,7 @@ function stopRec() {
   r.notes.forEach(x => { if (x.off == null) x.off = now; });
   updateRecUI();
   if (!r.notes.length) { setMsg("Ничего не записано.", true); return; }
-  const text = FPN.fromRecording(r.notes, {
+  const text = EPN.fromRecording(r.notes, {
     n: state.n, ratio: state.ratio, base: state.base, octaves: state.oct, wave: state.wave,
     tempo: tempo(), q: +$("quant").value, t0: r.metro ? r.t0 : null,
     title: "Запись " + new Date().toLocaleString("ru-RU"),
@@ -452,7 +452,7 @@ function updateRecUI() {
 function fileName(text) {
   const m = text.match(/^@title[ \t]+(.+)$/m);
   const name = (m ? m[1] : "").replace(/[\\/:*?"<>|]+/g, "").trim().slice(0, 60);
-  return (name || "melody") + ".fpn";
+  return (name || "melody") + ".epn";
 }
 function download(text, name) {
   const a = document.createElement("a");
@@ -496,7 +496,7 @@ function loadText(text, label, opts = {}) {
   if (dirty && songText.value.trim() && songText.value !== text && !confirm("Заменить текст в редакторе?")) return false;
   stopAll();
   songText.value = text; dirty = false;
-  const song = FPN.parse(text, state.n);
+  const song = EPN.parse(text, state.n);
   if (song.events.length) applySong(song);
   if (opts.src) setHashSong("src", opts.src); else if (!opts.keepHash) updateSongHash();
   const title = song.meta.title || label || "Мелодия";

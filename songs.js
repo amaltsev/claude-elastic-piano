@@ -1,5 +1,5 @@
 "use strict";
-// Built-in pieces in FPN notation (see README.md).
+// Built-in pieces in EPN notation (see README.md).
 // Kept as JS strings so that index.html also works when opened from file://.
 
 const SONGS = [
