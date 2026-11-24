@@ -1,5 +1,6 @@
 "use strict";
 const $ = id => document.getElementById(id);
+$("home").href = location.pathname; // same page, no hash = default settings (works for file:// too)
 
 // ---------- keyboard mapping (physical keys, layout independent) ----------
 const ROWS = [
