@@ -210,7 +210,9 @@ function press(src, i) {
   if (i < 0 || i >= total) return;
   release(src);
   voices.set(src, startVoice(i)); mark(i, 1);
-  if (rec && (src[0] === "k" || src[0] === "p")) {
+  if (src[0] !== "k" && src[0] !== "p") return; // only the player's keys are recorded
+  if (playing?.session) sessionPress(src, i);
+  else if (rec) {
     const note = { i, on: performance.now() / 1000, off: null };
     rec.notes.push(note); rec.open.set(src, note); updateRecStatus();
   }
@@ -218,6 +220,7 @@ function press(src, i) {
 function release(src) {
   const v = voices.get(src); if (!v) return;
   voices.delete(src); mark(v.i, -1);
+  if (playing?.session) sessionRelease(src);
   if (rec && rec.open.has(src)) { rec.open.get(src).off = performance.now() / 1000; rec.open.delete(src); }
   if (sustain) held.push(v); else releaseVoice(v);
 }
@@ -258,6 +261,7 @@ const isTyping = el => el && (el.tagName === "INPUT" && el.type !== "range" && e
 addEventListener("keydown", e => {
   if (isTyping(e.target) || e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.code === "Space") { e.preventDefault(); if (!e.repeat) setSustain(true); return; }
+  if (e.code === "Backspace" && playing?.session) { e.preventDefault(); if (!e.repeat) undoPass(); return; }
   if (e.code === "ArrowLeft" || e.code === "ArrowRight") { e.preventDefault(); if (!e.repeat) shift(e.code === "ArrowLeft" ? -1 : 1); return; }
   const j = CODES.indexOf(e.code); if (j < 0) return;
   e.preventDefault(); if (e.repeat) return;
@@ -315,7 +319,7 @@ $("sus").addEventListener("click", () => setSustain(!sustain));
 // ================= notation: playback, recording, import / export =================
 const songText = $("song");
 let dirty = false;      // the editor was changed by hand since the last load
-let playing = null;     // { bus, timers, marks }
+let playing = null;     // see startPlayback()
 let songKeyOffset = 0;  // keyboard index of song step 0
 let rec = null;         // { t0, notes, open, metro }
 let metroTimer = null;
@@ -354,46 +358,134 @@ function songMark(pl, idx, d) {
   pl.marks.set(idx, (pl.marks.get(idx) || 0) + d);
 }
 
+// ---------- playback engine: plain playback, loops and loop recording ----------
+// Notes are scheduled a little ahead (LOOK seconds) from a timer, pass by pass, so that a
+// loop can run forever and voices can be muted or added while it plays.
+const LOOK = 0.3;
+const muted = new Set(); // voice ids silenced in playback; not saved anywhere
+
+// AudioContext time of the sound that is reaching the speakers right now. The player reacts
+// to what they hear, so loop recording measures key presses against this, not currentTime.
+function audibleTime() {
+  try {
+    const ts = ctx.getOutputTimestamp && ctx.getOutputTimestamp();
+    if (ts && ts.performanceTime > 0) {
+      const t = ts.contextTime + (performance.now() - ts.performanceTime) / 1000;
+      if (isFinite(t)) return Math.min(t, ctx.currentTime);
+    }
+  } catch (_) {}
+  return ctx.currentTime - (ctx.outputLatency || ctx.baseLatency || 0);
+}
+
+// song: parsed EPN; L: loop/pass length in whole notes; session: loop recording state or null
+function startPlayback({ song, songBase, events, L, loop, session = null, leadIn = 0 }) {
+  ensureAudio();
+  const spw = 240 / tempo(); // seconds per whole note
+  const bus = ctx.createGain(); bus.connect(master);
+  const pl = {
+    bus, marks: new Map(), events, songBase, session, loop, spw,
+    L, Lsec: L * spw, t0: ctx.currentTime + 0.15 + leadIn, leadIn,
+    j: 0, from: 0, // next pass to schedule and position in it (whole notes)
+  };
+  playing = pl;
+  pl.timer = setInterval(() => tickPlayback(pl), 25);
+  tickPlayback(pl);
+  updatePlayBtn(); drawLoopBar(pl); requestAnimationFrame(progress);
+  return pl;
+}
+const looping = pl => !!pl.session || $("loop").checked;
+
+function passEvents(pl, j) {
+  const out = pl.events.filter(e => !muted.has(e.voice));
+  const s = pl.session;
+  if (s) for (const ly of s.layers) {
+    if (ly.from > j || muted.has(ly.id)) continue;
+    for (const x of ly.notes)
+      out.push({ t: x.on / s.q, len: ((x.off ?? s.Ltk) - x.on) / s.q, steps: [x.step], vel: 0.8, wave: null, voice: ly.id });
+  }
+  return out;
+}
+
+function playEvent(pl, e, start) {
+  const end = start + e.len * pl.spw * 0.92;
+  for (const s of e.steps) {
+    const f = pl.songBase * Math.pow(state.ratio, s / state.n);
+    if (f < 15 || f > 20000) continue;
+    releaseVoice(makeVoice(f, start, e.wave || state.wave, e.vel, pl.bus), end);
+    if (pl.session) continue; // while recording only the player's own keys light up
+    const idx = s + songKeyOffset;
+    if (idx >= 0 && idx < total) {
+      setTimeout(() => songMark(pl, idx, 1), Math.max(0, (start - ctx.currentTime) * 1000));
+      setTimeout(() => songMark(pl, idx, -1), Math.max(0, (end - ctx.currentTime) * 1000));
+    }
+  }
+}
+
+function tickPlayback(pl) {
+  if (playing !== pl) return;
+  if (pl.session) sessionTick(pl);
+  if (playing !== pl) return;
+  const horizon = ctx.currentTime + LOOK;
+  for (;;) {
+    if (pl.j > 0 && pl.from === 0 && !looping(pl)) break; // finish the pass, don't start another
+    const ps = pl.t0 + pl.j * pl.Lsec;
+    const to = Math.min(pl.L, (horizon - ps) / pl.spw);
+    if (to <= pl.from) break;
+    for (const e of passEvents(pl, pl.j)) if (e.t >= pl.from && e.t < to) playEvent(pl, e, ps + e.t * pl.spw);
+    if (to < pl.L) { pl.from = to; break; }
+    pl.j++; pl.from = 0;
+  }
+  // Not looping (any more): finish once the last scheduled pass has played out.
+  if (!looping(pl) && pl.j > 0 && pl.from === 0 && ctx.currentTime > pl.t0 + pl.j * pl.Lsec + 0.3) {
+    clearInterval(pl.timer); playing = null; updatePlayBtn();
+  }
+}
+
 function playSong() {
   stopAll();
   const song = EPN.parse(songText.value, state.n);
   if (!song.events.length) { setMsg(errText(song.errors) || "Нет нот для проигрывания.", true); return; }
   const songBase = applySong(song);
-  ensureAudio();
-  const spw = 240 / tempo(); // seconds per whole note
-  const bus = ctx.createGain(); bus.connect(master);
-  const pl = { bus, timers: [], marks: new Map() };
-  const t0 = ctx.currentTime + 0.15;
-  const later = (t, fn) => pl.timers.push(setTimeout(fn, Math.max(0, (t - ctx.currentTime) * 1000)));
-  for (const e of song.events) {
-    const start = t0 + e.t * spw, end = start + e.len * spw * 0.92;
-    for (const s of e.steps) {
-      const f = songBase * Math.pow(state.ratio, s / state.n);
-      if (f < 15 || f > 20000) continue;
-      releaseVoice(makeVoice(f, start, e.wave || state.wave, e.vel, bus), end);
-      const idx = s + songKeyOffset;
-      if (idx >= 0 && idx < total) {
-        later(start, () => songMark(pl, idx, 1));
-        later(end, () => songMark(pl, idx, -1));
-      }
-    }
-  }
-  const dur = song.length * spw;
-  later(t0 + dur + 0.3, () => { if (playing === pl) { playing = null; updatePlayBtn(); } });
-  playing = pl; updatePlayBtn();
-  setMsg(`${song.meta.title || "Без названия"} · ${fmtTime(dur)}` + (song.errors.length ? ". " + errText(song.errors) : ""), song.errors.length > 0);
+  startPlayback({ song, songBase, events: song.events, L: song.length });
+  const dur = song.length * playing.spw;
+  setMsg(`${song.meta.title || "Без названия"} · ${fmtTime(dur)}` + ($("loop").checked ? " · по кругу" : "") +
+    (song.errors.length ? ". " + errText(song.errors) : ""), song.errors.length > 0);
 }
 
 function stopSong() {
   if (!playing) return;
-  const pl = playing; playing = null;
-  pl.timers.forEach(clearTimeout);
+  const pl = playing;
+  if (pl.session) endSession(pl);
+  playing = null;
+  clearInterval(pl.timer);
   for (const [idx, c] of pl.marks) if (c > 0) mark(idx, -c);
   pl.bus.gain.setTargetAtTime(0, ctx.currentTime, 0.02);
   setTimeout(() => pl.bus.disconnect(), 300);
-  updatePlayBtn();
+  updatePlayBtn(); updateRecUI();
 }
 function updatePlayBtn() { $("play").textContent = playing ? "■ Стоп" : "▶ Играть"; }
+
+// Thin bar above the keyboard: position in the pass (or the count-in), with bar lines.
+function drawLoopBar(pl) {
+  const bar = $("loopbar");
+  bar.querySelectorAll("i").forEach(x => x.remove());
+  if (pl.L <= 64) for (let k = 1; k < pl.L - 1e-9; k++) {
+    const i = document.createElement("i"); i.style.left = (k / pl.L * 100) + "%"; bar.appendChild(i);
+  }
+  bar.classList.toggle("rec", !!pl.session);
+  bar.hidden = false;
+}
+function progress() {
+  const pl = playing, bar = $("loopbar"), fill = $("loopfill");
+  if (!pl) { bar.hidden = true; return; }
+  const pos = audibleTime() - pl.t0;
+  bar.classList.toggle("count", pos < 0);
+  let x;
+  if (pos < 0) x = pl.leadIn ? 1 + pos / pl.leadIn : 0;
+  else x = looping(pl) || pos < pl.Lsec ? (pos % pl.Lsec) / pl.Lsec : 1;
+  fill.style.width = (clamp(x, 0, 1) * 100) + "%";
+  requestAnimationFrame(progress);
+}
 
 // ---------- recording ----------
 function click(t, strong) {
@@ -413,7 +505,8 @@ function startMetronome(t0) {
 function stopMetronome() { clearInterval(metroTimer); metroTimer = null; }
 
 function startRec() {
-  if (rec) return;
+  if (rec || playing?.session) return;
+  if ($("rectarget").value !== "+free") { startLoopRec($("rectarget").value); return; }
   stopSong(); ensureAudio();
   const metro = $("metro").checked;
   // Note times come from performance.now(): the audio clock may stand still while audio is suspended.
@@ -422,6 +515,7 @@ function startRec() {
   updateRecUI();
 }
 function stopRec() {
+  if (playing?.session) { stopSong(); return; }
   if (!rec) return;
   const r = rec; rec = null; stopMetronome();
   const now = performance.now() / 1000;
@@ -437,16 +531,156 @@ function stopRec() {
     download(text, fileName(text));
     return;
   }
-  songText.value = text; dirty = false; updateSongHash();
+  songText.value = text; dirty = false; updateSongHash(); refreshVoices();
   setMsg(`Записано нот: ${r.notes.length}. Текст в редакторе — можно поправить, проиграть или экспортировать.`);
 }
+
+// ---------- loop recording ----------
+// target "+new": every pass with key presses becomes a new voice, heard from the next pass on.
+// target "v:ID": voice ID is silent; a pass with key presses replaces it, a silent pass keeps it.
+function startLoopRec(target) {
+  stopAll();
+  const song = EPN.parse(songText.value, state.n);
+  const mode = target === "+new" ? "new" : "voice", id = mode === "voice" ? target.slice(2) : null;
+  if (mode === "voice" && !(id in song.voiceLengths)) { setMsg(`В тексте нет голоса «${id}».`, true); refreshVoices(); return; }
+  let songBase = state.base;
+  if (songText.value.trim()) songBase = applySong(song); else songKeyOffset = 0;
+  const L = song.length > 1e-9 ? song.length : clamp(Math.round(+$("loopbars").value) || 4, 1, 64);
+  const q = +$("quant").value, spw = 240 / tempo();
+  const session = {
+    mode, id, q, Ltk: L * q, grid: spw / q,
+    // tuning as it was at the start: changing it stops the recording, and the last pass
+    // must still be written in the old one
+    hdr: { n: state.n, ratio: state.ratio, base: state.base, octaves: state.oct, wave: state.wave, tempo: tempo() },
+    passes: new Map(), open: new Map(), layers: [], undo: [], cur: 0, added: 0, replaced: 0,
+  };
+  const leadIn = $("metro").checked ? spw : 0; // one bar of 4/4
+  const events = mode === "voice" ? song.events.filter(e => e.voice !== id) : song.events;
+  const pl = startPlayback({ song, songBase, events, L, session, leadIn });
+  if (leadIn) startMetronome(pl.t0 - leadIn);
+  updateRecUI();
+  setMsg((mode === "new" ? "Каждый круг, в котором вы играли, станет новым голосом." :
+    `Голос «${id}» заглушён; круг, в котором вы играли, заменит его, тихий круг оставит как было.`) +
+    " Backspace — отменить последний круг. «■ Закончить запись» или Esc — остановить.");
+}
+
+function sessionPress(src, i) {
+  const pl = playing, s = pl.session;
+  const pos = audibleTime() - pl.t0;
+  // A note up to half a grid step early belongs to the next pass (playing "on the one").
+  if (pos < -s.grid / 2) return; // count-in
+  const j = Math.floor((pos + s.grid / 2) / pl.Lsec);
+  if (j < s.cur) return;
+  if (!s.passes.has(j)) s.passes.set(j, { notes: [], layer: null });
+  const p = s.passes.get(j);
+  const note = { step: i - songKeyOffset, j, on: Math.max(0, Math.round((pos - j * pl.Lsec) / s.grid)), off: null };
+  p.notes.push(note); s.open.set(src, note);
+  if (s.mode === "new" && !p.layer) { p.layer = { id: null, from: j + 1, notes: p.notes }; s.layers.push(p.layer); }
+}
+function sessionRelease(src) {
+  const pl = playing, s = pl.session, note = s.open.get(src);
+  if (!note) return;
+  s.open.delete(src);
+  if (note.off != null) return; // its pass is already closed
+  const x = Math.round((audibleTime() - pl.t0 - note.j * pl.Lsec) / s.grid);
+  note.off = Math.min(s.Ltk, Math.max(note.on + 1, x));
+}
+
+function sessionTick(pl) {
+  const s = pl.session, now = audibleTime();
+  while (now >= pl.t0 + (s.cur + 1) * pl.Lsec) closePass(pl, s.cur++);
+  updateRecStatus();
+}
+
+function nextVoiceId(text, n) {
+  const ids = new Set(Object.keys(EPN.parse(text, n).voiceLengths));
+  let k = 1; while (ids.has(String(k))) k++;
+  return String(k);
+}
+function closePass(pl, j) {
+  const s = pl.session, p = s.passes.get(j);
+  s.passes.delete(j);
+  if (!p || !p.notes.length) return; // nothing played: keep what is there
+  for (const x of p.notes) if (x.off == null) x.off = s.Ltk; // still held: cut at the loop end
+  const body = EPN.ticksToText(p.notes.map(x => ({ i: x.step, on: x.on, off: x.off })), s.hdr.n, s.q, s.Ltk);
+  let text = songText.value;
+  s.undo.push({ text, layer: p.layer });
+  if (s.mode === "voice") { text = EPN.replaceVoice(text, s.id, body); s.replaced++; }
+  else {
+    if (!text.trim()) text = EPN.header({ ...s.hdr, title: "Запись " + new Date().toLocaleString("ru-RU") });
+    p.layer.id = nextVoiceId(text, s.hdr.n);
+    text = EPN.appendVoice(text, p.layer.id, body);
+    s.added++;
+  }
+  setRecordedText(text);
+}
+function undoPass() {
+  const s = playing.session, u = s.undo.pop();
+  if (!u) { setMsg("Отменять нечего.", true); return; }
+  if (u.layer) { s.layers = s.layers.filter(l => l !== u.layer); s.added--; } else s.replaced--;
+  setRecordedText(u.text);
+  setMsg(u.layer ? `Голос «${u.layer.id}» убран.` : `Голос «${s.id}» возвращён к предыдущему варианту.`);
+}
+function setRecordedText(text) {
+  songText.value = text; dirty = true; // not saved anywhere yet: ask before replacing it
+  updateSongHash(); refreshVoices();
+}
+
+// Stopping: an unfinished pass is kept only if it was stopped within its last beat.
+function endSession(pl) {
+  const s = pl.session;
+  stopMetronome();
+  const p = s.passes.get(s.cur);
+  let lost = false;
+  if (p && p.notes.length) {
+    const pos = audibleTime() - pl.t0 - s.cur * pl.Lsec;
+    if (pos >= pl.Lsec - pl.spw / 4) closePass(pl, s.cur); else lost = true;
+  }
+  pl.session = null; // the rest of the teardown is plain playback
+  const done = s.mode === "new" ? `Добавлено голосов: ${s.added}.` :
+    s.replaced ? `Голос «${s.id}» записан заново.` : `Голос «${s.id}» не изменился.`;
+  setMsg(done + (lost ? " Незаконченный круг не сохранён." : "") + " Нажмите ▶ Играть, чтобы послушать всё вместе.");
+}
+
 function updateRecStatus() {
-  $("recstatus").textContent = rec ? `● идёт запись · нот: ${rec.notes.length}` : "";
+  const s = playing?.session, el = $("recstatus");
+  if (s) {
+    const pos = audibleTime() - playing.t0;
+    el.textContent = pos < 0 ? "● отсчёт…" :
+      `● запись по кругу · круг ${s.cur + 1} · ` + (s.mode === "new" ? `новых голосов: ${s.added}` : `голос «${s.id}»`);
+  } else el.textContent = rec ? `● идёт запись · нот: ${rec.notes.length}` : "";
 }
 function updateRecUI() {
-  $("recstart").disabled = !!rec; $("recstop").disabled = !rec;
-  $("recstatus").classList.toggle("live", !!rec);
-  updateRecStatus();
+  const on = !!rec || !!playing?.session;
+  $("recstart").disabled = on; $("recstop").disabled = !on;
+  for (const id of ["rectarget", "loopbars", "quant", "tempo"]) $(id).disabled = on;
+  songText.readOnly = !!playing?.session;
+  $("recstatus").classList.toggle("live", on);
+  updateRecStatus(); refreshVoices();
+}
+
+// Voice chips (click = mute) and the list of recording targets, from the editor text.
+function refreshVoices() {
+  const song = EPN.parse(songText.value, state.n);
+  const ids = Object.keys(song.voiceLengths);
+  const recId = playing?.session?.id;
+  const box = $("voices");
+  box.innerHTML = "";
+  for (const id of ids) {
+    const b = document.createElement("button");
+    b.className = "pill vchip" + (muted.has(id) ? " off" : "") + (id === recId ? " rec" : "");
+    b.textContent = id; b.dataset.id = id;
+    b.title = muted.has(id) ? "Заглушён — щёлкните, чтобы включить" : "Щёлкните, чтобы заглушить";
+    box.appendChild(b);
+  }
+  $("voicebar").hidden = !ids.length;
+  const sel = $("rectarget"), old = sel.value;
+  sel.innerHTML = "";
+  sel.append(new Option("новые голоса по кругу", "+new"));
+  for (const id of ids) sel.append(new Option(`голос «${id}» заново по кругу`, "v:" + id));
+  sel.append(new Option("без петли, заменить весь текст", "+free"));
+  sel.value = [...sel.options].some(o => o.value === old) ? old : "+new";
+  $("loopbarslabel").hidden = sel.value !== "+new" || song.length > 1e-9;
 }
 
 // ---------- files, links ----------
@@ -500,6 +734,7 @@ function loadText(text, label, opts = {}) {
   const song = EPN.parse(text, state.n);
   if (song.events.length) applySong(song);
   if (opts.src) setHashSong("src", opts.src); else if (!opts.keepHash) updateSongHash();
+  refreshVoices();
   const title = song.meta.title || label || "Мелодия";
   setMsg(song.errors.length ? `${title}: ${errText(song.errors)}` : `${title} — нажмите ▶ Играть (или Ctrl+Enter в редакторе).`, song.errors.length > 0);
   return true;
@@ -537,9 +772,17 @@ songText.addEventListener("keydown", e => {
   if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); playing ? stopSong() : playSong(); }
 });
 let hashTimer = null;
-songText.addEventListener("input", () => { dirty = true; clearTimeout(hashTimer); hashTimer = setTimeout(updateSongHash, 700); });
+songText.addEventListener("input", () => { dirty = true; refreshVoices(); clearTimeout(hashTimer); hashTimer = setTimeout(updateSongHash, 700); });
 
 $("recstart").addEventListener("click", e => { startRec(); e.currentTarget.blur(); });
+$("loop").addEventListener("change", e => e.target.blur());
+$("rectarget").addEventListener("change", e => { refreshVoices(); e.target.blur(); });
+$("voices").addEventListener("click", e => {
+  const b = e.target.closest(".vchip"); if (!b) return;
+  const id = b.dataset.id;
+  if (muted.has(id)) muted.delete(id); else muted.add(id);
+  refreshVoices();
+});
 $("recstop").addEventListener("click", e => { stopRec(); e.currentTarget.blur(); });
 $("export").addEventListener("click", e => {
   e.currentTarget.blur();
@@ -577,7 +820,7 @@ updateRecUI();
     catch (e) { setMsg("Не удалось прочитать мелодию из ссылки.", true); }
   } else if (p.has("src")) fetchSong(p.get("src"));
   else {
-    songText.value = SONGS[0];
+    songText.value = SONGS[0]; refreshVoices();
     setMsg("Выберите композицию из списка, напишите свою или запишите с клавиатуры.");
   }
 })();

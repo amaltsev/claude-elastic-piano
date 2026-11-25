@@ -26,14 +26,14 @@ const EPN = (() => {
 
   // Returns { meta, events, errors, length }.
   //   meta:   { title, n, ratio, base, octaves, tempo, wave } — only what the text sets
-  //   events: { t, len, steps: [absolute step], vel, wave, line }; t and len in whole notes
+  //   events: { t, len, steps: [absolute step], vel, wave, voice, line }; t and len in whole notes
   function parse(text, fallbackN = 12) {
     const meta = {}, errors = [], raw = [];
     const defaults = { dur: 1 / 4, vel: 0.8, wave: null };
     const voices = new Map();
     let cur = null;
     const voice = id => {
-      if (!voices.has(id)) voices.set(id, { t: 0, dur: defaults.dur, vel: defaults.vel, wave: defaults.wave });
+      if (!voices.has(id)) voices.set(id, { id, t: 0, dur: defaults.dur, vel: defaults.vel, wave: defaults.wave });
       return voices.get(id);
     };
     const err = (ln, msg) => errors.push(`строка ${ln}: ${msg}`);
@@ -109,14 +109,14 @@ const EPN = (() => {
           cur.dur = (1 / d) * (2 - Math.pow(0.5, m[3].length));
         }
         const len = cur.dur * (m[4] ? +m[4] : 1);
-        if (pitches) raw.push({ t: cur.t, len, pitches, vel: cur.vel, wave: cur.wave, line: ln });
+        if (pitches) raw.push({ t: cur.t, len, pitches, vel: cur.vel, wave: cur.wave, voice: cur.id, line: ln });
         cur.t += len;
       }
     });
 
     const n = meta.n || fallbackN;
     const events = raw.map(e => ({
-      t: e.t, len: e.len, vel: e.vel, wave: e.wave, line: e.line,
+      t: e.t, len: e.len, vel: e.vel, wave: e.wave, voice: e.voice, line: e.line,
       steps: e.pitches.map(p => {
         const m = p.match(PITCH);
         const up = (m[2].match(/'/g) || []).length, down = (m[2].match(/,/g) || []).length;
@@ -135,35 +135,34 @@ const EPN = (() => {
     for (let d = 1; d <= q; d *= 2)
       for (let dots = 0; dots <= 2; dots++)
         if (Math.abs((q / d) * (2 - Math.pow(0.5, dots)) - ticks) < 1e-9) return "/" + d + ".".repeat(dots);
-    return `/${q}*${ticks}`;
+    const d = Math.round(q / ticks); // e.g. 2/3 of a 1/16 tick = /24
+    if (d > 0 && Math.abs(q / d - ticks) < 1e-9) return "/" + d;
+    return `/${q}*${fmtNum(ticks)}`;
   }
   function pitchStr(i, n) {
     const o = Math.floor(i / n), d = i - o * n;
     return d + (o > 0 ? "'".repeat(o) : ",".repeat(-o));
   }
 
-  // notes: [{ i, on, off }] — key index and times in seconds.
-  // opts: { n, ratio, base, octaves, wave, tempo, q, t0, title }
-  //   q  — grid: 8, 16 or 32 (parts of a whole note)
-  //   t0 — time of beat 1 (metronome start) or null to start from the first note
-  function fromRecording(notes, opts) {
-    const { n, q, tempo } = opts;
-    const head = [
+  // Rest lengths tried when splitting a long rest, in whole notes, longest first.
+  const RESTS = [1, 3 / 4, 1 / 2, 3 / 8, 1 / 4, 3 / 16, 1 / 8, 3 / 32, 1 / 16, 1 / 32];
+
+  function header(opts) {
+    return [
       `@title ${opts.title || "Запись"}`,
-      `@edo ${n}`, `@ratio ${fmtNum(opts.ratio)}`, `@base ${fmtNum(opts.base)}`,
-      `@octaves ${opts.octaves}`, `@wave ${opts.wave}`, `@tempo ${fmtNum(tempo)}`, "",
-    ];
-    if (!notes.length) return head.join("\n") + "# пусто: ни одной ноты не записано\n";
+      `@edo ${opts.n}`, `@ratio ${fmtNum(opts.ratio)}`, `@base ${fmtNum(opts.base)}`,
+      `@octaves ${opts.octaves}`, `@wave ${opts.wave}`, `@tempo ${fmtNum(opts.tempo)}`, "",
+    ].join("\n");
+  }
 
-    const grid = (240 / tempo) / q; // seconds per tick
-    const t0 = opts.t0 != null ? opts.t0 : Math.min(...notes.map(x => x.on));
-    const tk = t => Math.round((t - t0) / grid);
-    const qn = notes.map(x => ({ i: x.i, on: Math.max(0, tk(x.on)), off: tk(x.off) }));
-    const lead = Math.floor(Math.min(...qn.map(x => x.on)) / q) * q; // drop whole silent bars
-    qn.forEach(x => { x.on -= lead; x.off -= lead; });
-
+  // notes: [{ i, on, off }] — step numbers and times in grid ticks (q ticks per whole note).
+  // total: if given, notes are cut at this tick and the voice is padded with a rest up to it
+  // (it may be fractional, then the last rest gets a multiplier like /16*0.5).
+  // Notes that start together become a chord; each lasts until the next one starts.
+  function ticksToText(notes, n, q, total) {
+    const limit = total != null ? total : Infinity;
     const byTick = new Map();
-    for (const x of qn) {
+    for (const x of notes) {
       if (!byTick.has(x.on)) byTick.set(x.on, []);
       byTick.get(x.on).push(x);
     }
@@ -172,7 +171,18 @@ const EPN = (() => {
     const out = [];
     let pos = 0, last = "", bars = 0;
     const emit = (pitch, len) => {
-      if (pos > 0 && pos % q === 0) { bars++; out.push(bars % 4 === 0 ? "|\n" : "|"); }
+      if (pitch === "r") { // a rest can be split into plain durations: r/4 r/8, not r/16*6
+        let left = len;
+        while (left > 1e-6) {
+          const toBar = q - (pos % q) < 1e-6 ? q : q - (pos % q); // rests don't cross bar lines
+          const chunk = Math.min(left, toBar);
+          const d = RESTS.map(r => r * q).find(t => t <= chunk + 1e-6 && Math.abs(t - Math.round(t)) < 1e-9) || chunk;
+          put("r", d); left -= d;
+        }
+      } else put(pitch, len);
+    };
+    const put = (pitch, len) => {
+      if (pos > 0 && Math.abs(pos % q) < 1e-6) { bars++; out.push(bars % 4 === 0 ? "|\n" : "|"); }
       let d = durStr(len, q), shown = "";
       if (d.includes("*")) { shown = d; last = `/${q}`; }
       else if (d !== last) { shown = d; last = d; }
@@ -180,20 +190,83 @@ const EPN = (() => {
       pos += len;
     };
 
-    if (ticks[0] > 0) emit("r", ticks[0]);
+    if (ticks.length && ticks[0] > 0) emit("r", ticks[0]);
     ticks.forEach((t, k) => {
       const group = byTick.get(t);
       const keys = [...new Set(group.map(x => x.i))].sort((a, b) => a - b);
       const next = k + 1 < ticks.length ? ticks[k + 1] : Infinity;
       let end = Math.max(...group.map(x => x.off));
-      end = Math.min(Math.max(end, t + 1), next);
+      end = Math.min(Math.max(end, t + 1), next, limit);
       const pitch = keys.length === 1 ? pitchStr(keys[0], n) : "[" + keys.map(i => pitchStr(i, n)).join(" ") + "]";
       emit(pitch, end - t);
       if (next !== Infinity && next > end) emit("r", next - end);
     });
+    if (total != null && total - pos > 1e-6) emit("r", total - pos);
 
-    return head.join("\n") + out.join(" ").replace(/ ?\n ?/g, "\n") + "\n";
+    return out.join(" ").replace(/ ?\n ?/g, "\n").replace(/\n$/, "") + "\n";
   }
 
-  return { parse, fromRecording, noteHz, WAVES };
+  // notes: [{ i, on, off }] — key index and times in seconds.
+  // opts: { n, ratio, base, octaves, wave, tempo, q, t0, title }
+  //   q  — grid: 8, 16 or 32 (parts of a whole note)
+  //   t0 — time of beat 1 (metronome start) or null to start from the first note
+  function fromRecording(notes, opts) {
+    const { n, q, tempo } = opts;
+    const head = header(opts);
+    if (!notes.length) return head + "# пусто: ни одной ноты не записано\n";
+
+    const grid = (240 / tempo) / q; // seconds per tick
+    const t0 = opts.t0 != null ? opts.t0 : Math.min(...notes.map(x => x.on));
+    const tk = t => Math.round((t - t0) / grid);
+    const qn = notes.map(x => ({ i: x.i, on: Math.max(0, tk(x.on)), off: tk(x.off) }));
+    const lead = Math.floor(Math.min(...qn.map(x => x.on)) / q) * q; // drop whole silent bars
+    qn.forEach(x => { x.on -= lead; x.off -= lead; });
+    return head + ticksToText(qn, n, q, null);
+  }
+
+  // ---------- editing voices in a text ----------
+  const lineCode = src => src.replace(/(^|\s)#.*$/, "").trim();
+  const directive = line => { const m = line.match(/^@(\w+)\s*(.*)$/); return m ? [m[1].toLowerCase(), m[2].trim()] : null; };
+
+  // Replace the notes of voice `id` with `body`. Its first @voice section keeps the @voice,
+  // @wave and @vel lines and gets the new notes; comments there and any later sections of
+  // the same voice are dropped. Notes before the first @voice belong to voice "1".
+  function replaceVoice(text, id, body) {
+    const out = [], bodyLines = body.replace(/\s+$/, "").split("\n");
+    let cur = null, inFirst = false, firstSeen = false;
+    const endFirst = () => {
+      if (!inFirst) return;
+      while (out.length && !out[out.length - 1].trim()) out.pop();
+      out.push(...bodyLines, "");
+      inFirst = false;
+    };
+    for (const src of text.split(/\r?\n/)) {
+      const line = lineCode(src), d = line[0] === "@" ? directive(line) : null;
+      if (d && d[0] === "voice") {
+        endFirst();
+        cur = d[1] || "1";
+        if (cur === id) {
+          if (firstSeen) continue;
+          firstSeen = inFirst = true;
+        }
+        out.push(src);
+        continue;
+      }
+      if ((cur || "1") !== id) { out.push(src); continue; }
+      if (cur === null) { if (!line || d) out.push(src); continue; } // notes before any @voice: drop only the notes
+      if (d && !(d[0] === "wave" || d[0] === "vel")) { out.push(src); continue; } // global directives stay
+      if (d && inFirst) out.push(src);
+    }
+    endFirst();
+    let res = out.join("\n").replace(/\s+$/, "");
+    if (!firstSeen) res += `\n\n@voice ${id}\n` + bodyLines.join("\n");
+    return res.replace(/\n{3,}/g, "\n\n") + "\n";
+  }
+
+  function appendVoice(text, id, body) {
+    const t = text.replace(/\s+$/, "");
+    return (t ? t + "\n\n" : "") + `@voice ${id}\n` + body.replace(/\s+$/, "") + "\n";
+  }
+
+  return { parse, fromRecording, header, ticksToText, replaceVoice, appendVoice, noteHz, WAVES };
 })();

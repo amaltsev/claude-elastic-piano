@@ -20,6 +20,7 @@
   --accent: #7c96ff; --key-l: 24%; --key-s: 30%; --key-on-l: 52%; --shadow: none;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body {
   margin: 0; background: var(--bg); color: var(--fg);
   font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -93,6 +94,15 @@ label.inline input[type=number] { width: 70px; }
 #songurl { flex: 1 1 220px; }
 .msg { font-size: 13px; color: var(--muted); min-height: 1.4em; overflow-wrap: anywhere; }
 .msg.err { color: #d0453b; }
+.lbl { font-size: 13px; color: var(--muted); }
+.vchip { cursor: pointer; background: var(--bg); color: var(--fg); }
+.vchip.off { text-decoration: line-through; opacity: .5; }
+.vchip.rec { border-color: #d0453b; color: #d0453b; }
+.loopbar { position: relative; height: 6px; margin: 0 0 8px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.loopbar i { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--bg); z-index: 1; }
+#loopfill { height: 100%; width: 0; background: var(--accent); }
+.loopbar.rec #loopfill { background: #d0453b; }
+.loopbar.count #loopfill { background: var(--muted); }
 #recstatus { font-size: 13px; color: var(--muted); }
 #recstatus.live { color: #d0453b; font-weight: 600; }
 button:disabled { opacity: .45; cursor: default; border-color: var(--line); }
@@ -175,6 +185,7 @@ kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4p
     <button id="right" title="Сдвинуть раскладку клавиатуры на октаву вверх">октава →</button>
   </div>
 
+  <div class="loopbar" id="loopbar" hidden><div id="loopfill"></div></div>
   <div class="kb-wrap" id="kbwrap"><div class="kb" id="kb"></div></div>
 
   <div class="ruler-wrap">
@@ -187,6 +198,7 @@ kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4p
     <div class="bar">
       <select id="songlist"><option value="">Композиции…</option></select>
       <button id="play">▶ Играть</button>
+      <label class="inline" title="Повторять, пока не нажата «■ Стоп»"><input type="checkbox" id="loop"> по кругу</label>
       <label class="inline">Темп ♩= <input id="tempo" type="number" min="10" max="400" step="1" value="100"></label>
       <span class="spacer"></span>
       <button id="open">Открыть файл</button>
@@ -194,6 +206,10 @@ kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4p
       <button id="link">Ссылка</button>
     </div>
     <textarea id="song" spellcheck="false" autocomplete="off" aria-label="Нотный текст"></textarea>
+    <div class="bar" id="voicebar" hidden>
+      <span class="lbl">Голоса (щелчок — заглушить):</span>
+      <span id="voices" class="row"></span>
+    </div>
     <div class="bar">
       <input id="songurl" type="url" placeholder="URL файла с нотами, например https://example.com/melody.epn">
       <button id="loadurl">Загрузить по URL</button>
@@ -201,6 +217,8 @@ kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4p
     <div class="bar">
       <button id="recstart">● Начать запись</button>
       <button id="recstop">■ Закончить запись</button>
+      <label class="inline">Запись <select id="rectarget"></select></label>
+      <label class="inline" id="loopbarslabel" title="Длина петли, пока в редакторе нет нот">Тактов <input id="loopbars" type="number" min="1" max="64" step="1" value="4"></label>
       <label class="inline">Сетка
         <select id="quant"><option value="8">1/8</option><option value="16" selected>1/16</option><option value="32">1/32</option></select>
       </label>
