@@ -833,7 +833,7 @@ updateRecUI();
     catch (e) { setMsg("Не удалось прочитать мелодию из ссылки.", true); }
   } else if (p.has("src")) fetchSong(p.get("src"));
   else {
-    songText.value = SONGS[0]; refreshVoices();
-    setMsg("Выберите композицию из списка, напишите свою или запишите с клавиатуры.");
+    refreshVoices(); // start from a blank sheet
+    setMsg("Чистый лист: запишите первый голос («● Начать запись»), напишите ноты или выберите композицию из списка.");
   }
 })();
