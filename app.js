@@ -768,9 +768,14 @@ const songTitle = t => (t.match(/^@title[ \t]+(.+)$/m) || [, "Без назва�
     const o = new Option(songTitle(t), i);
     (/^@edo 12\s*$/m.test(t) && !/^@ratio/m.test(t) ? std : odd).appendChild(o);
   });
-  sel.append(std, odd);
+  sel.append(new Option("Чистый лист", "+blank"), std, odd);
   sel.addEventListener("change", () => {
-    if (sel.value !== "") loadText(SONGS[+sel.value]);
+    if (sel.value === "+blank") {
+      if (loadText("")) {
+        muted.clear(); refreshVoices();
+        setMsg("Чистый лист: запишите первый голос («● Начать запись») или напишите ноты. Строй пианино остался прежним.");
+      }
+    } else if (sel.value !== "") loadText(SONGS[+sel.value]);
     sel.value = ""; sel.blur();
   });
 })();
