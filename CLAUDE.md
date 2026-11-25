@@ -17,9 +17,9 @@ Live at https://amaltsev.github.io/claude-elastic-piano/ (GitHub Pages, served f
   scheduled ahead of time. Release levels come from `envAt()` — keep it in sync with the
   envelope in `makeVoice()`.
 - Keys are matched by `e.code` (layout-independent); Shift = one period higher.
-- Free recording timestamps use `performance.now()`, not `ctx.currentTime`. Loop recording
-  instead measures presses against `audibleTime()` (audio clock minus output latency), since
-  the player follows what they hear.
+- Recording measures presses against `audibleTime()` (audio clock minus output latency),
+  since the player follows what they hear. A first take has no length yet (`L = Infinity`):
+  use `passOffset()`, as `0 * Infinity` is `NaN`.
 - Playback (plain, loop, loop recording) is one scheduler, `tickPlayback()`, that queues notes
   `LOOK` seconds ahead pass by pass; don't schedule whole songs up front again.
 

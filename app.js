@@ -212,16 +212,11 @@ function press(src, i) {
   voices.set(src, startVoice(i)); mark(i, 1);
   if (src[0] !== "k" && src[0] !== "p") return; // only the player's keys are recorded
   if (playing?.session) sessionPress(src, i);
-  else if (rec) {
-    const note = { i, on: performance.now() / 1000, off: null };
-    rec.notes.push(note); rec.open.set(src, note); updateRecStatus();
-  }
 }
 function release(src) {
   const v = voices.get(src); if (!v) return;
   voices.delete(src); mark(v.i, -1);
   if (playing?.session) sessionRelease(src);
-  if (rec && rec.open.has(src)) { rec.open.get(src).off = performance.now() / 1000; rec.open.delete(src); }
   if (sustain) held.push(v); else releaseVoice(v);
 }
 function setSustain(on) {
@@ -261,7 +256,7 @@ const isTyping = el => el && (el.tagName === "INPUT" && el.type !== "range" && e
 addEventListener("keydown", e => {
   if (isTyping(e.target) || e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.code === "Space") { e.preventDefault(); if (!e.repeat) setSustain(true); return; }
-  if (e.code === "Backspace" && playing?.session) { e.preventDefault(); if (!e.repeat) undoPass(); return; }
+  if (e.code === "Backspace" && playing?.session && !playing.session.take) { e.preventDefault(); if (!e.repeat) undoPass(); return; }
   if (e.code === "ArrowLeft" || e.code === "ArrowRight") { e.preventDefault(); if (!e.repeat) shift(e.code === "ArrowLeft" ? -1 : 1); return; }
   const j = CODES.indexOf(e.code); if (j < 0) return;
   e.preventDefault(); if (e.repeat) return;
@@ -321,7 +316,6 @@ const songText = $("song");
 let dirty = false;      // the editor was changed by hand since the last load
 let playing = null;     // see startPlayback()
 let songKeyOffset = 0;  // keyboard index of song step 0
-let rec = null;         // { t0, notes, open, metro }
 let metroTimer = null;
 
 const tempo = () => clamp(+$("tempo").value || 100, 10, 400);
@@ -393,7 +387,9 @@ function startPlayback({ song, songBase, events, L, loop, session = null, leadIn
   updatePlayBtn(); drawLoopBar(pl); requestAnimationFrame(progress);
   return pl;
 }
-const looping = pl => !!pl.session || $("loop").checked;
+// Start of pass j relative to t0. A first take has an endless pass, and 0 * Infinity is NaN.
+const passOffset = (pl, j) => j ? j * pl.Lsec : 0;
+const looping = pl => pl.session ? !pl.session.take : $("loop").checked;
 
 function passEvents(pl, j) {
   const out = pl.events.filter(e => !muted.has(e.voice));
@@ -428,7 +424,7 @@ function tickPlayback(pl) {
   const horizon = ctx.currentTime + LOOK;
   for (;;) {
     if (pl.j > 0 && pl.from === 0 && !looping(pl)) break; // finish the pass, don't start another
-    const ps = pl.t0 + pl.j * pl.Lsec;
+    const ps = pl.t0 + passOffset(pl, pl.j);
     const to = Math.min(pl.L, (horizon - ps) / pl.spw);
     if (to <= pl.from) break;
     for (const e of passEvents(pl, pl.j)) if (e.t >= pl.from && e.t < to) playEvent(pl, e, ps + e.t * pl.spw);
@@ -436,7 +432,8 @@ function tickPlayback(pl) {
     pl.j++; pl.from = 0;
   }
   // Not looping (any more): finish once the last scheduled pass has played out.
-  if (!looping(pl) && pl.j > 0 && pl.from === 0 && ctx.currentTime > pl.t0 + pl.j * pl.Lsec + 0.3) {
+  // (A recording is stopped by sessionTick instead, so that the take gets written.)
+  if (!pl.session && !looping(pl) && pl.j > 0 && pl.from === 0 && ctx.currentTime > pl.t0 + passOffset(pl, pl.j) + 0.3) {
     clearInterval(pl.timer); playing = null; updatePlayBtn();
   }
 }
@@ -469,6 +466,7 @@ function updatePlayBtn() { $("play").textContent = playing ? "■ Стоп" : "�
 function drawLoopBar(pl) {
   const bar = $("loopbar");
   bar.querySelectorAll("i").forEach(x => x.remove());
+  if (!isFinite(pl.L)) { bar.hidden = true; return; } // first voice: no length yet
   if (pl.L <= 64) for (let k = 1; k < pl.L - 1e-9; k++) {
     const i = document.createElement("i"); i.style.left = (k / pl.L * 100) + "%"; bar.appendChild(i);
   }
@@ -487,7 +485,7 @@ function progress() {
   requestAnimationFrame(progress);
 }
 
-// ---------- recording ----------
+// ---------- metronome ----------
 function click(t, strong) {
   const o = ctx.createOscillator(), g = ctx.createGain();
   o.frequency.value = strong ? 1600 : 1100;
@@ -504,65 +502,44 @@ function startMetronome(t0) {
 }
 function stopMetronome() { clearInterval(metroTimer); metroTimer = null; }
 
+// ---------- recording ----------
+// One recording = one voice: target "+new" adds a voice, "v:ID" re-records voice ID (it is silent
+// meanwhile). Without "по кругу" (a take) the piece plays once and recording stops at its end;
+// with an empty editor it runs until stopped. With "по кругу" (looper) the piece repeats: in
+// "+new" every pass with key presses becomes a new voice heard from the next pass on; in "v:ID"
+// a pass with presses replaces the voice and a silent pass keeps it.
 function startRec() {
-  if (rec || playing?.session) return;
-  if ($("rectarget").value !== "+free") { startLoopRec($("rectarget").value); return; }
-  stopSong(); ensureAudio();
-  const metro = $("metro").checked;
-  // Note times come from performance.now(): the audio clock may stand still while audio is suspended.
-  rec = { t0: performance.now() / 1000 + 0.1, notes: [], open: new Map(), metro };
-  if (metro) startMetronome(ctx.currentTime + 0.1);
-  updateRecUI();
-}
-function stopRec() {
-  if (playing?.session) { stopSong(); return; }
-  if (!rec) return;
-  const r = rec; rec = null; stopMetronome();
-  const now = performance.now() / 1000;
-  r.notes.forEach(x => { if (x.off == null) x.off = now; });
-  updateRecUI();
-  if (!r.notes.length) { setMsg("Ничего не записано.", true); return; }
-  const text = EPN.fromRecording(r.notes, {
-    n: state.n, ratio: state.ratio, base: state.base, octaves: state.oct, wave: state.wave,
-    tempo: tempo(), q: +$("quant").value, t0: r.metro ? r.t0 : null,
-    title: "Запись " + new Date().toLocaleString("ru-RU"),
-  });
-  if (dirty && songText.value.trim() && !confirm("Заменить текст в редакторе записью?\n(Отмена — сразу сохранить запись в файл.)")) {
-    download(text, fileName(text));
-    return;
-  }
-  songText.value = text; dirty = false; updateSongHash(); refreshVoices();
-  setMsg(`Записано нот: ${r.notes.length}. Текст в редакторе — можно поправить, проиграть или экспортировать.`);
-}
-
-// ---------- loop recording ----------
-// target "+new": every pass with key presses becomes a new voice, heard from the next pass on.
-// target "v:ID": voice ID is silent; a pass with key presses replaces it, a silent pass keeps it.
-function startLoopRec(target) {
+  if (playing?.session) return;
+  const target = $("rectarget").value, loop = $("loop").checked;
   stopAll();
   const song = EPN.parse(songText.value, state.n);
   const mode = target === "+new" ? "new" : "voice", id = mode === "voice" ? target.slice(2) : null;
   if (mode === "voice" && !(id in song.voiceLengths)) { setMsg(`В тексте нет голоса «${id}».`, true); refreshVoices(); return; }
   let songBase = state.base;
   if (songText.value.trim()) songBase = applySong(song); else songKeyOffset = 0;
-  const L = song.length > 1e-9 ? song.length : clamp(Math.round(+$("loopbars").value) || 4, 1, 64);
+  const empty = !(song.length > 1e-9);
+  const L = !empty ? song.length : loop ? clamp(Math.round(+$("loopbars").value) || 4, 1, 64) : Infinity;
   const q = +$("quant").value, spw = 240 / tempo();
+  const leadIn = $("metro").checked ? spw : 0; // one bar of 4/4
   const session = {
-    mode, id, q, Ltk: L * q, grid: spw / q,
+    take: !loop, metro: leadIn > 0, mode, id, q, Ltk: L * q, grid: spw / q,
     // tuning as it was at the start: changing it stops the recording, and the last pass
     // must still be written in the old one
     hdr: { n: state.n, ratio: state.ratio, base: state.base, octaves: state.oct, wave: state.wave, tempo: tempo() },
     passes: new Map(), open: new Map(), layers: [], undo: [], cur: 0, added: 0, replaced: 0,
   };
-  const leadIn = $("metro").checked ? spw : 0; // one bar of 4/4
   const events = mode === "voice" ? song.events.filter(e => e.voice !== id) : song.events;
   const pl = startPlayback({ song, songBase, events, L, session, leadIn });
   if (leadIn) startMetronome(pl.t0 - leadIn);
   updateRecUI();
-  setMsg((mode === "new" ? "Каждый круг, в котором вы играли, станет новым голосом." :
+  const what = mode === "new" ? "Запись нового голоса" : `Голос «${id}» заглушён и записывается заново`;
+  if (!loop) setMsg(empty ? "Запись первого голоса: играйте сколько нужно. «■ Закончить запись» или Esc — остановить." :
+    what + ": пьеса проиграет один раз, и запись остановится сама. «■ Закончить запись» или Esc — раньше.");
+  else setMsg((mode === "new" ? "Каждый круг, в котором вы играли, станет новым голосом." :
     `Голос «${id}» заглушён; круг, в котором вы играли, заменит его, тихий круг оставит как было.`) +
     " Backspace — отменить последний круг. «■ Закончить запись» или Esc — остановить.");
 }
+function stopRec() { if (playing?.session) stopSong(); }
 
 function sessionPress(src, i) {
   const pl = playing, s = pl.session;
@@ -573,22 +550,23 @@ function sessionPress(src, i) {
   if (j < s.cur) return;
   if (!s.passes.has(j)) s.passes.set(j, { notes: [], layer: null });
   const p = s.passes.get(j);
-  const note = { step: i - songKeyOffset, j, on: Math.max(0, Math.round((pos - j * pl.Lsec) / s.grid)), off: null };
+  const note = { step: i - songKeyOffset, j, on: Math.max(0, Math.round((pos - passOffset(pl, j)) / s.grid)), off: null };
   p.notes.push(note); s.open.set(src, note);
-  if (s.mode === "new" && !p.layer) { p.layer = { id: null, from: j + 1, notes: p.notes }; s.layers.push(p.layer); }
+  if (!s.take && s.mode === "new" && !p.layer) { p.layer = { id: null, from: j + 1, notes: p.notes }; s.layers.push(p.layer); }
 }
 function sessionRelease(src) {
   const pl = playing, s = pl.session, note = s.open.get(src);
   if (!note) return;
   s.open.delete(src);
   if (note.off != null) return; // its pass is already closed
-  const x = Math.round((audibleTime() - pl.t0 - note.j * pl.Lsec) / s.grid);
+  const x = Math.round((audibleTime() - pl.t0 - passOffset(pl, note.j)) / s.grid);
   note.off = Math.min(s.Ltk, Math.max(note.on + 1, x));
 }
 
 function sessionTick(pl) {
   const s = pl.session, now = audibleTime();
-  while (now >= pl.t0 + (s.cur + 1) * pl.Lsec) closePass(pl, s.cur++);
+  if (s.take) { if (now >= pl.t0 + pl.Lsec) { stopSong(); return; } } // the piece has played once
+  else while (now >= pl.t0 + (s.cur + 1) * pl.Lsec) closePass(pl, s.cur++);
   updateRecStatus();
 }
 
@@ -597,22 +575,45 @@ function nextVoiceId(text, n) {
   let k = 1; while (ids.has(String(k))) k++;
   return String(k);
 }
+// notes: [{ i: step, on, off }] in ticks; returns the id of the voice written.
+function writeVoice(s, notes, total) {
+  const body = EPN.ticksToText(notes, s.hdr.n, s.q, total);
+  let text = songText.value, id = s.id;
+  if (s.mode === "voice") text = EPN.replaceVoice(text, id, body);
+  else {
+    if (!text.trim()) text = EPN.header({ ...s.hdr, title: "Запись " + new Date().toLocaleString("ru-RU") });
+    id = nextVoiceId(text, s.hdr.n);
+    text = EPN.appendVoice(text, id, body);
+  }
+  setRecordedText(text);
+  return id;
+}
 function closePass(pl, j) {
   const s = pl.session, p = s.passes.get(j);
   s.passes.delete(j);
   if (!p || !p.notes.length) return; // nothing played: keep what is there
   for (const x of p.notes) if (x.off == null) x.off = s.Ltk; // still held: cut at the loop end
-  const body = EPN.ticksToText(p.notes.map(x => ({ i: x.step, on: x.on, off: x.off })), s.hdr.n, s.q, s.Ltk);
-  let text = songText.value;
-  s.undo.push({ text, layer: p.layer });
-  if (s.mode === "voice") { text = EPN.replaceVoice(text, s.id, body); s.replaced++; }
-  else {
-    if (!text.trim()) text = EPN.header({ ...s.hdr, title: "Запись " + new Date().toLocaleString("ru-RU") });
-    p.layer.id = nextVoiceId(text, s.hdr.n);
-    text = EPN.appendVoice(text, p.layer.id, body);
-    s.added++;
+  s.undo.push({ text: songText.value, layer: p.layer });
+  const id = writeVoice(s, p.notes.map(x => ({ i: x.step, on: x.on, off: x.off })), s.Ltk);
+  if (p.layer) { p.layer.id = id; s.added++; } else s.replaced++;
+}
+// End of a take (stopped by hand or at the end of the piece): whatever was played is kept.
+function closeTake(pl) {
+  const s = pl.session, p = s.passes.get(0);
+  if (!p || !p.notes.length) return "Ничего не сыграно — голоса не изменились.";
+  const now = Math.round((audibleTime() - pl.t0) / s.grid);
+  const notes = p.notes.map(x => ({ i: x.step, on: x.on, off: Math.min(s.Ltk, x.off ?? Math.max(x.on + 1, now)) }));
+  let total = s.Ltk;
+  if (!isFinite(total)) { // first voice: as long as the take, in whole bars
+    const first = Math.min(...notes.map(x => x.on));
+    const lead = s.metro ? Math.floor(first / s.q) * s.q : first; // no metronome: start at the first note
+    notes.forEach(x => { x.on -= lead; x.off -= lead; });
+    total = Math.max(1, Math.ceil(Math.max(...notes.map(x => x.off)) / s.q)) * s.q;
   }
-  setRecordedText(text);
+  const id = writeVoice(s, notes, total);
+  preferTarget = "v:" + id;
+  return `Голос «${id}» записан. ▶ Играть — послушать всё вместе; «● Начать запись» ещё раз — переписать этот голос; ` +
+    "чтобы добавить следующий, выберите «новый голос».";
 }
 function undoPass() {
   const s = playing.session, u = s.undo.pop();
@@ -626,40 +627,47 @@ function setRecordedText(text) {
   updateSongHash(); refreshVoices();
 }
 
-// Stopping: an unfinished pass is kept only if it was stopped within its last beat.
+// Stopping a looper: an unfinished pass is kept only if it was stopped within its last beat.
 function endSession(pl) {
   const s = pl.session;
   stopMetronome();
-  const p = s.passes.get(s.cur);
-  let lost = false;
-  if (p && p.notes.length) {
-    const pos = audibleTime() - pl.t0 - s.cur * pl.Lsec;
-    if (pos >= pl.Lsec - pl.spw / 4) closePass(pl, s.cur); else lost = true;
+  let msg;
+  if (s.take) msg = closeTake(pl);
+  else {
+    const p = s.passes.get(s.cur);
+    let lost = false;
+    if (p && p.notes.length) {
+      const pos = audibleTime() - pl.t0 - s.cur * pl.Lsec;
+      if (pos >= pl.Lsec - pl.spw / 4) closePass(pl, s.cur); else lost = true;
+    }
+    msg = (s.mode === "new" ? `Добавлено голосов: ${s.added}.` :
+      s.replaced ? `Голос «${s.id}» записан заново.` : `Голос «${s.id}» не изменился.`) +
+      (lost ? " Незаконченный круг не сохранён." : "") + " Нажмите ▶ Играть, чтобы послушать всё вместе.";
   }
   pl.session = null; // the rest of the teardown is plain playback
-  const done = s.mode === "new" ? `Добавлено голосов: ${s.added}.` :
-    s.replaced ? `Голос «${s.id}» записан заново.` : `Голос «${s.id}» не изменился.`;
-  setMsg(done + (lost ? " Незаконченный круг не сохранён." : "") + " Нажмите ▶ Играть, чтобы послушать всё вместе.");
+  setMsg(msg);
 }
 
 function updateRecStatus() {
   const s = playing?.session, el = $("recstatus");
-  if (s) {
-    const pos = audibleTime() - playing.t0;
-    el.textContent = pos < 0 ? "● отсчёт…" :
-      `● запись по кругу · круг ${s.cur + 1} · ` + (s.mode === "new" ? `новых голосов: ${s.added}` : `голос «${s.id}»`);
-  } else el.textContent = rec ? `● идёт запись · нот: ${rec.notes.length}` : "";
+  if (!s) { el.textContent = ""; return; }
+  const pos = audibleTime() - playing.t0;
+  const who = s.mode === "new" ? "новый голос" : `голос «${s.id}»`;
+  el.textContent = pos < 0 ? "● отсчёт…" : s.take
+    ? `● запись · ${who} · ${fmtTime(pos)}` + (isFinite(playing.Lsec) ? ` из ${fmtTime(playing.Lsec)}` : "")
+    : `● запись по кругу · круг ${s.cur + 1} · ` + (s.mode === "new" ? `новых голосов: ${s.added}` : who);
 }
 function updateRecUI() {
-  const on = !!rec || !!playing?.session;
+  const on = !!playing?.session;
   $("recstart").disabled = on; $("recstop").disabled = !on;
-  for (const id of ["rectarget", "loopbars", "quant", "tempo"]) $(id).disabled = on;
-  songText.readOnly = !!playing?.session;
+  for (const id of ["rectarget", "loopbars", "quant", "tempo", "loop"]) $(id).disabled = on;
+  songText.readOnly = on;
   $("recstatus").classList.toggle("live", on);
   updateRecStatus(); refreshVoices();
 }
 
 // Voice chips (click = mute) and the list of recording targets, from the editor text.
+let preferTarget = null; // select this target on the next refresh (the voice just recorded)
 function refreshVoices() {
   const song = EPN.parse(songText.value, state.n);
   const ids = Object.keys(song.voiceLengths);
@@ -674,13 +682,13 @@ function refreshVoices() {
     box.appendChild(b);
   }
   $("voicebar").hidden = !ids.length;
-  const sel = $("rectarget"), old = sel.value;
+  const sel = $("rectarget"), want = preferTarget || sel.value;
+  preferTarget = null;
   sel.innerHTML = "";
-  sel.append(new Option("новые голоса по кругу", "+new"));
-  for (const id of ids) sel.append(new Option(`голос «${id}» заново по кругу`, "v:" + id));
-  sel.append(new Option("без петли, заменить весь текст", "+free"));
-  sel.value = [...sel.options].some(o => o.value === old) ? old : "+new";
-  $("loopbarslabel").hidden = sel.value !== "+new" || song.length > 1e-9;
+  sel.append(new Option("новый голос", "+new"));
+  for (const id of ids) sel.append(new Option(`голос «${id}» заново`, "v:" + id));
+  sel.value = [...sel.options].some(o => o.value === want) ? want : "+new";
+  $("loopbarslabel").hidden = !$("loop").checked || sel.value !== "+new" || song.length > 1e-9;
 }
 
 // ---------- files, links ----------
@@ -775,7 +783,7 @@ let hashTimer = null;
 songText.addEventListener("input", () => { dirty = true; refreshVoices(); clearTimeout(hashTimer); hashTimer = setTimeout(updateSongHash, 700); });
 
 $("recstart").addEventListener("click", e => { startRec(); e.currentTarget.blur(); });
-$("loop").addEventListener("change", e => e.target.blur());
+$("loop").addEventListener("change", e => { refreshVoices(); e.target.blur(); });
 $("rectarget").addEventListener("change", e => { refreshVoices(); e.target.blur(); });
 $("voices").addEventListener("click", e => {
   const b = e.target.closest(".vchip"); if (!b) return;

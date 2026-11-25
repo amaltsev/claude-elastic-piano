@@ -206,24 +206,6 @@ const EPN = (() => {
     return out.join(" ").replace(/ ?\n ?/g, "\n").replace(/\n$/, "") + "\n";
   }
 
-  // notes: [{ i, on, off }] — key index and times in seconds.
-  // opts: { n, ratio, base, octaves, wave, tempo, q, t0, title }
-  //   q  — grid: 8, 16 or 32 (parts of a whole note)
-  //   t0 — time of beat 1 (metronome start) or null to start from the first note
-  function fromRecording(notes, opts) {
-    const { n, q, tempo } = opts;
-    const head = header(opts);
-    if (!notes.length) return head + "# пусто: ни одной ноты не записано\n";
-
-    const grid = (240 / tempo) / q; // seconds per tick
-    const t0 = opts.t0 != null ? opts.t0 : Math.min(...notes.map(x => x.on));
-    const tk = t => Math.round((t - t0) / grid);
-    const qn = notes.map(x => ({ i: x.i, on: Math.max(0, tk(x.on)), off: tk(x.off) }));
-    const lead = Math.floor(Math.min(...qn.map(x => x.on)) / q) * q; // drop whole silent bars
-    qn.forEach(x => { x.on -= lead; x.off -= lead; });
-    return head + ticksToText(qn, n, q, null);
-  }
-
   // ---------- editing voices in a text ----------
   const lineCode = src => src.replace(/(^|\s)#.*$/, "").trim();
   const directive = line => { const m = line.match(/^@(\w+)\s*(.*)$/); return m ? [m[1].toLowerCase(), m[2].trim()] : null; };
@@ -268,5 +250,5 @@ const EPN = (() => {
     return (t ? t + "\n\n" : "") + `@voice ${id}\n` + body.replace(/\s+$/, "") + "\n";
   }
 
-  return { parse, fromRecording, header, ticksToText, replaceVoice, appendVoice, noteHz, WAVES };
+  return { parse, header, ticksToText, replaceVoice, appendVoice, noteHz, WAVES };
 })();
