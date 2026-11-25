@@ -1,0 +1,25 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Tool versions
+        run: |
+          node --version
+          google-chrome --version || true
+          firefox --version || true
+      - name: Syntax and songs
+        run: node tests/check.js
+      - name: Browsers (Chrome, Firefox)
+        run: node tests/browser.js

@@ -25,9 +25,11 @@ Live at https://amaltsev.github.io/claude-elastic-piano/ (GitHub Pages, served f
 
 ## Checking changes
 
-- `node --check` each script; parse all `SONGS` with `EPN.parse` (via `node:vm`) and check
-  for errors and that `voiceLengths` match within each piece.
-- Headless `google-chrome` / `firefox` are installed: inject a test script into a copy of
-  `index.html` and read `console.log` output (Firefox needs
-  `devtools.console.stdout.content=true` in a profile `user.js`). Audio can be verified with
-  an `OfflineAudioContext` assigned to the global `ctx`/`master`.
+- `node tests/check.js`: `node --check` on each script, and every song in `SONGS` parses
+  without errors with equal `voiceLengths`.
+- `node tests/browser.js [chrome] [firefox]`: loads a copy of `index.html` with
+  `tests/page-test.js` injected into headless Chrome and Firefox and reads its `console.log`
+  output. It checks page errors, loading every song, and the audio, rendered with an
+  `OfflineAudioContext` that `ensureAudio()` is made to use: songs aren't silent or clipped,
+  releases scheduled ahead don't jump, and `envAt()` matches `makeVoice()`. Add tests there.
+- Both run on GitHub Actions (`.github/workflows/ci.yml`) on every push and PR.
